@@ -973,6 +973,32 @@ class BayesConv2d(torch.nn.Module):
 
 		return out, prior
 
+class BayesianNeuralNetwork(torch.nn.Module):
+
+	def __init__(self, num_MC):
+
+		super().__init__()
+
+		self.num_MC = num_MC
+
+	def forward(self, x):
+
+		# print(f'@MC_BNN', (self.num_MC,*(x.dim()*(1,))))
+		x = x.unsqueeze(0).repeat(self.num_MC, *(x.dim() * (1,)))
+
+		return x
+
+	def collect_kl_div(self):
+
+		self.kl_div = 0
+
+		for name, module in self.net.named_children():
+
+			# print(f'@kl_div {any([isinstance(module, layer) for layer in [BayesLinear, BayesConv2d]])}')
+
+			if any([isinstance(module, layer) for layer in [BayesLinear, BayesConv2d]]):
+				self.kl_div = self.kl_div + module.kl_div
+
 if __name__=="__main__":
 
 	if True: # testing MC_BatchNorm1D
