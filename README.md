@@ -1,6 +1,6 @@
 # torch-ProbabilisticLayers
 
-![](data/plots/BNN.gif)
+![](data/plots/BNN.gif=100x100)
 
 This repository implements **parallelized** Bayesian Neural Networks in PyTorch via Variational Inference.
 
