@@ -19,11 +19,6 @@ FloatTensor = torch.FloatTensor
 torch.set_printoptions(precision=4, sci_mode=False)
 np.set_printoptions(precision=4, suppress=True)
 
-import scipy
-import scipy as sp
-from scipy.io import loadmat as sp_loadmat
-import copy
-
 '''
 Utils.Utils
 '''
@@ -38,7 +33,6 @@ def str2bool(v):
 		return False
 	else:
 		raise argparse.ArgumentTypeError('Boolean value expected.')
-
 
 class AverageMeter:
 
@@ -99,7 +93,6 @@ class AverageMeter:
 		elif len(self.vals) > 0:
 			return [np.around(sum(epoch_vals) / len(epoch_vals), 3) for epoch_vals in self.vals]
 
-
 class RunningAverageMeter(object):
 	"""Computes and stores the average and current value"""
 
@@ -145,7 +138,6 @@ class RunningAverageMeter(object):
 		else:
 			return False
 
-
 class Timer:
 	"""Record multiple running times."""
 
@@ -173,7 +165,6 @@ class Timer:
 		# Return the accumulated times
 		return np.array(self.times).cumsum().tolist()
 
-
 class Benchmark:
 	def __init__(self, description='Done in %.4f sec', repetitions=1):
 		'''
@@ -193,3 +184,16 @@ class Benchmark:
 	def __exit__(self, *args):
 		print(self.description % (self.timer.stop() / self.repetitions))
 
+def MC_Accuracy(pred, target):
+
+	assert pred.dim()==3
+
+	if target.dim()==2:
+		'''
+		target.shape = [MC * BatchSize, ClassInteger]
+		'''
+
+	elif target.dim()==3:
+		'''
+		target.shape = [MC * BatchSize, OneHot]
+		'''

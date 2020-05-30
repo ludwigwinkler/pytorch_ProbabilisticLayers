@@ -24,18 +24,73 @@ np.set_printoptions(precision=4, suppress=True)
 sys.path.append("../../..")  # Up to -> KFAC -> Optimization -> PHD
 
 
-def MC_CrossEntropy(pred, target):
-	assert pred.dim() == 3, f'Prediction should be of shape [MC, BS, C] but is only of shape {pred.shape}'
-	assert target.dim() == 1, f'Targets should be of shape [BS] with each correct label but is only of shape {target.shape}'
+class MC_CrossEntropyLoss(torch.nn.Module):
 
-	num_MC, batch_size, num_C = pred.shape
+	def __init__(self, reduction='sum'):
 
-	MC_target = FloatTensor(batch_size, num_C).fill_(0)
-	MC_target.scatter_(1, target.unsqueeze(-1), 1)
-	MC_target = MC_target.unsqueeze(0).repeat((num_MC, 1, 1))
+		torch.nn.Module.__init__(self)
 
-	loss = F.cross_entropy(pred.flatten(0, 1), target.unsqueeze(0).repeat(num_MC, 1).flatten(0, 1).long())
-	return loss
+		self.reduction = reduction
+
+	def forward(self, pred, target):
+		assert pred.dim() == 3, f'Prediction should be of shape [MC, BS, C] but is only of shape {pred.shape}'
+		assert target.dim() == 1, f'Targets should be of shape [BS] with each correct label but is only of shape {target.shape}'
+
+		MC, BS, C = pred.shape
+		assert target.shape == torch.Size([BS]), f"{target.shape=}"
+
+		MC_target = target.repeat(MC).long()
+
+		loss = F.cross_entropy(pred.flatten(0, 1), MC_target, reduction='mean')
+		return loss
+
+def MC_Accuracy(pred, target):
+
+	if pred.dim()==3:
+		'''
+		Prediction with a Monte Carlo approximation pred.shape=[MC, BS, C]
+		'''
+		assert target.dim()==1, f"{target.dim()=}"
+		assert pred.dim()==3, f"{pred.dim()=}"
+		assert target.shape[0]==pred.shape[1], f"{target.shape=}!={pred.shape=}[1]={pred.shape[1]}"
+
+		MC, BS, C = pred.shape
+
+		target = target.repeat(MC)
+
+		train_pred = pred.argmax(dim=-1) # [MC, BS, C] -> [MC, BS]
+		train_pred = train_pred.flatten() # [MC, BS] -> [MC * BS]
+
+		assert train_pred.shape==target.shape, f"{train_pred.shape=} != {target.shape=}"
+
+		train_pred_correct = train_pred.eq(target.view_as(train_pred)).sum().item()
+		batch_acc = train_pred_correct / target.numel()
+
+		return batch_acc
+
+	elif pred.dim()==2:
+		'''
+		Deterministic prediction
+		'''
+
+		assert target.dim() == 1, f"{target.dim()=}"
+		assert pred.dim() == 2, f"{pred.dim()=}"
+		assert target.shape[0] == pred.shape[0], f"{target.shape=}!={pred.shape=}[1]={pred.shape[1]}"
+
+		BS, C = pred.shape
+
+		# target = target.repeat(MC)
+
+		train_pred = pred.argmax(dim=-1)  # [MC, BS, C] -> [MC, BS]
+		# train_pred = train_pred.flatten()  # [MC, BS] -> [MC * BS]
+
+		assert train_pred.shape == target.shape, f"{train_pred.shape=} != {target.shape=}"
+
+		train_pred_correct = train_pred.eq(target.view_as(train_pred)).sum().item()
+		batch_acc = train_pred_correct / target.numel()
+
+		return batch_acc
+
 
 class MC_NLL(torch.nn.Module):
 

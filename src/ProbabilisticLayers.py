@@ -749,7 +749,7 @@ class BayesLinear(torch.nn.Module):
 		self.bias = VariationalNormal(FloatTensor(out_features).normal_(0., self.mu_init_std),
 		                              FloatTensor(out_features).fill_(self.mu_init_std))
 
-		# self.reset_parameters(scale_offset=0)
+		self.reset_parameters(scale_offset=0)
 
 	def reset_parameters(self, scale_offset=0):
 
@@ -773,8 +773,6 @@ class BayesLinear(torch.nn.Module):
 
 		num_MC = x.shape[0]
 		batch_size = x.shape[1]
-		# print(x.shape)
-		# exit()
 
 		forward = ['reparam', 'local_reparam'][0]
 
@@ -840,7 +838,7 @@ class BayesConv2d(torch.nn.Module):
 		self.bias = VariationalNormal(FloatTensor(out_channels).normal_(0., self.mu_init_std),
 		                              FloatTensor(out_channels).fill_(self.mu_init_std))
 
-		self.reset_parameters(scale_offset=1.0)
+		self.reset_parameters(scale_offset=0.)
 
 
 	def reset_parameters(self, scale_offset=0):
@@ -856,46 +854,52 @@ class BayesConv2d(torch.nn.Module):
 
 	def forward(self, x : torch.Tensor, stochastic=True, prior=None):
 		'''
-
-		:param x: 5 dimensional tensor of shape [BatchSize, N_MC x in_channels, height, width]
-		:return:
-		MC Kernelsize: [out_channel, in_channel, kernel_size, kernel_size]
+		torch.nn.functional.conv{1d, 2d, 3d} allows the use of groups
+		Groups split the in_channels into a set of individual group in_channels which are processed with separate kernels
+		We want to fold the MC dimension therefore into the channel dimension.
 		'''
 
-		# assert x.dim()==5, 'Input tensor not of shape [BatchSize, num_MC, in_channels, height, width]' old one
+
 		assert x.dim()==5, 'Input tensor not of shape [num_MC, batch_size in_channels, height, width]'
 		assert x.shape[0] == self.num_MC, f'Input.shape={x.shape} with {x.shape[0]}!={self.num_MC}'
 
-		num_MC = x.shape[0]
-		batch_size = x.shape[1]
-		out = x.permute(1,0,2,3,4) # shape = [ batch_size, num_MC, dim_in, height, width ]
-		# print('x', x.shape)
-		out = out.flatten(1,2).contiguous()
-		# print('conv input', out.shape)
+		MC, BS, C, H, W = x.shape
 
-		# dist_w = Normal(self.weight_loc, stochastic*F.softplus(self.weight_logscale))
-		# dist_b = Normal(self.bias_loc, stochastic*F.softplus(self.bias_logscale))
+		'''
+		Move BS dimension to the front 
+		Flatten MC and BS dimension into [BS, [ MC_C_1, MC_C_2, MC_C_3 ... ], H, W]
+		
+		'''
+		out = x.permute(1,0,2,3,4) # [MC, BS, C, H, W] -> [BS, MC, C, H, W]
+		out = out.flatten(1,2).contiguous() # [BS, MC * C, H, W]
 
-		# prior = (prior + torch.distributions.kl_divergence(dist_w, Normal(0,self.prior_scale)).sum()) if prior is not None else None
-		#
-		# w = dist_w.rsample((num_MC,))
-		# b = dist_b.rsample((num_MC,))
+		'''
+		Sample MC number of weights and biases
+		'''
+		w = self.weight.rsample((MC,)) # [MC, C_Out, C_In, Kernel_H, Kernel_W]
+		b = self.bias.rsample((MC,)) # [MC, C_Out]
 
-		w = self.weight.rsample((num_MC,))
-		b = self.bias.rsample((num_MC,))
+		'''
+		Flatten parameters into groups [ MC_Weight_1, MC_Weight_2, MC_Weight_3 ... ] for weights and biases
+		'''
+		w = w.flatten(0,1).contiguous()
+		b = b.flatten().contiguous()
 
-		prior = (prior + torch.distributions.kl_divergence(self.weight.dist(), Normal(0,self.prior_scale)).sum()) if prior is not None else None
+		'''
+		Data: 	[BS, [MC_C_1, MC_C_2, MC_C_3, MC_C_4 ... ], H, W]
+		Kernel: [MC_Weight_1, MC_Weight_2, MC_Weight_3
+		'''
+		out = F.conv2d(out, w, groups=MC, bias=b, stride=self.stride)
 
-		w = w.flatten(0,1).contiguous().contiguous()
-		b = b.permute(1,0).flatten().contiguous()
+		'''
+		Unsplit the MC dim from the C_Out dim and move MC dim again to the front
+		'''
+		out = out.reshape(BS, MC, self.out_channels, out.shape[-2], out.shape[-1]).contiguous()
+		out = out.permute(1,0,2,3,4) # [MC, BS, C_Out, H, W]
 
-		out = F.conv2d(out, w, groups=num_MC, bias=b, stride=self.stride)
+		self.kl_div = torch.distributions.kl_divergence(self.weight.dist(), Normal(0, self.prior_scale)).sum()
 
-
-		out = out.reshape(batch_size, num_MC, self.out_channels, out.shape[-2], out.shape[-1]).contiguous()
-		out = out.permute(1,0,2,3,4)
-
-		return out, prior
+		return out
 
 class BayesianNeuralNetwork(torch.nn.Module):
 
@@ -912,7 +916,7 @@ class BayesianNeuralNetwork(torch.nn.Module):
 		return x
 
 	def collect_kl_div(self):
-
+		'''
 		self.kl_div = 0
 
 		for name, module in self.named_children():
@@ -923,6 +927,9 @@ class BayesianNeuralNetwork(torch.nn.Module):
 				self.kl_div = self.kl_div + module.kl_div
 
 		return self.kl_div
+		'''
+
+		raise NotImplementedError
 
 if __name__=="__main__":
 

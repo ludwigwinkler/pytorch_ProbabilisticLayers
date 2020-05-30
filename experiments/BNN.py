@@ -240,7 +240,8 @@ for epoch in range(params.num_epochs):
 				plt.fill_between(x_pred, mu-3*std, mu+3*std, alpha=0.05, color='red')
 			plt.title(f"Epoch: {epoch}")
 			plt.grid()
-			# plt.show()
+
+
 
 			fig.canvas.draw()  # draw the canvas, cache the renderer
 			image = np.frombuffer(fig.canvas.tostring_rgb(), dtype='uint8')
