@@ -94,23 +94,20 @@ def MC_Accuracy(pred, target):
 
 class MC_NLL(torch.nn.Module):
 
-	def __init__(self, reduction='sum'):
+	def __init__(self, num_samples):
 
 		super().__init__()
 
-		self.reduction = reduction
+		self.num_samples = num_samples # rescales the log-likelihood to the full dataset
 
 	def forward(self, pred, target):
 		assert pred.dim() == target.dim() + 1
 
 		mu, std = pred.mean(dim=0), pred.std(dim=0)
 		assert mu.shape==std.shape==target.shape
-		NLL = -Normal(mu, std).log_prob(target)
+		NLL = -Normal(mu, std).log_prob(target).mean()
 
-		if self.reduction == 'sum':
-			NLL = NLL.sum()
-		elif self.reduction == 'mean':
-			NLL = NLL.mean()
+		NLL = NLL * self.num_samples
 
 		return NLL
 

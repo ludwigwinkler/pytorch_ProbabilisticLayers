@@ -49,15 +49,15 @@ params.add_argument('-logname',                   type=str,           default=' 
 params.add_argument('-logging',                   type=int,           default=0)
 
 params.add_argument('-num_hidden',                type=int,           default=50)
-params.add_argument('-num_samples',               type=int,           default=500)
+params.add_argument('-num_samples',               type=int,           default=200)
 params.add_argument('-x_noise_std',               type=float,         default=0.01)
-params.add_argument('-y_noise_std',               type=float,         default=.5)
+params.add_argument('-y_noise_std',               type=float,         default=.2)
 params.add_argument('-zoom',                      type=int,           default=3)
 
-params.add_argument('-lr',                        type=float,         default=0.005)
+params.add_argument('-lr',                        type=float,         default=0.01)
 
 params.add_argument('-num_epochs',                type=int,           default=200)
-params.add_argument('-batch_size',                type=int,           default=250)
+params.add_argument('-batch_size',                type=int,           default=200)
 params.add_argument('-num_MC',                    type=int,           default=25)
 params.add_argument('-val_patience',              type=int,           default=200)
 
@@ -71,10 +71,24 @@ class BayesNN(BayesianNeuralNetwork):
 
 		BayesianNeuralNetwork.__init__(self, num_MC=num_MC)
 
-		self.fc1 = BayesLinear(in_features, params.num_hidden, num_MC=num_MC)
-		self.fc2 = BayesLinear(params.num_hidden, params.num_hidden, num_MC=num_MC)
+		self.fc1 = BayesLinear(in_features, params.num_hidden, num_MC=num_MC, prior_scale=1.)
+		self.fc2 = BayesLinear(params.num_hidden, params.num_hidden, num_MC=num_MC, prior_scale=1.)
 		# self.fc3 = BayesLinear(params.num_hidden, params.num_hidden, num_MC=num_MC)
-		self.fc4 = BayesLinear(params.num_hidden, out_features, num_MC=num_MC)
+		self.fc4 = BayesLinear(params.num_hidden, out_features, num_MC=num_MC, prior_scale=1.)
+
+	def collect_kl_div(self):
+
+		self.kl_div = 0
+
+		for name, module in self.named_children():
+
+			# print(f'@kl_div {any([isinstance(module, layer) for layer in [BayesLinear, BayesConv2d]])}')
+
+			if any([isinstance(module, layer) for layer in [BayesLinear]]):
+				self.kl_div = self.kl_div + module.kl_div
+
+		return self.kl_div
+
 
 	def forward(self, x):
 
@@ -156,7 +170,7 @@ elif model_type=='nn':
 optim = torch.optim.RMSprop(model.parameters(), lr=params.lr)
 
 if model_type=='bnn':
-	criterion = MC_NLL(reduction='sum')
+	criterion = MC_NLL(num_samples=len(dataloader.dataset)) # mean requires rescaling of gradient
 	mse_criterion = lambda pred, target: F.mse_loss(pred, target.unsqueeze(0).repeat(pred.shape[0],1,1))
 elif model_type=='nn':
 	criterion = lambda pred, target: F.mse_loss(pred, target)
@@ -186,7 +200,7 @@ for epoch in range(params.num_epochs):
 		batch_loss = criterion(batch_pred, batch_target)
 
 		if model_type == 'bnn':
-			batch_kl_div = model.collect_kl_div() / len(dataloader)
+			batch_kl_div = model.collect_kl_div()
 
 		loss.update(batch_loss.detach().item())
 		mse_loss.update(mse_criterion(batch_pred, batch_target).detach().item())
@@ -240,13 +254,11 @@ for epoch in range(params.num_epochs):
 				plt.fill_between(x_pred, mu-3*std, mu+3*std, alpha=0.05, color='red')
 			plt.title(f"Epoch: {epoch}")
 			plt.grid()
-
-
+			# plt.show()
 
 			fig.canvas.draw()  # draw the canvas, cache the renderer
 			image = np.frombuffer(fig.canvas.tostring_rgb(), dtype='uint8')
 			image = image.reshape(fig.canvas.get_width_height()[::-1] + (3,))
-
 			gif_frames.append(image)
 
 import imageio
