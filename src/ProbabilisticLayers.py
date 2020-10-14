@@ -4,10 +4,11 @@ from torch.nn import Sequential, Tanh, ReLU, Linear, Dropout, CELU, BatchNorm1d,
 import torch.nn.functional as F
 
 import numpy as np
+from numbers import Number
 import math
 import matplotlib.pyplot as plt
 
-torch.manual_seed(1234)
+# torch.manual_seed(1234)
 
 if torch.cuda.is_available():
 	FloatTensor = torch.cuda.FloatTensor
@@ -15,6 +16,146 @@ if torch.cuda.is_available():
 elif not torch.cuda.is_available():
 	FloatTensor = torch.FloatTensor
 	Tensor = torch.FloatTensor
+
+#Loss Functions
+class MC_CrossEntropyLoss(torch.nn.Module):
+
+	def __init__(self, num_samples):
+		torch.nn.Module.__init__(self)
+
+		assert num_samples > 0
+		assert type(num_samples) is int
+
+		self.num_samples = num_samples
+
+	def forward(self, pred, target):
+		assert pred.dim() == 3, f'Prediction should be of shape [MC, BS, C] but is only of shape {pred.shape}'
+		assert target.dim() == 1, f'Targets should be of shape [BS] with each correct label but is only of shape {target.shape}'
+
+		MC, BS, C = pred.shape
+		assert target.shape == torch.Size([BS]), f"{target.shape=}"
+
+		MC_target = target.repeat(MC).long()
+
+		loss = F.cross_entropy(pred.flatten(0, 1), MC_target, reduction='mean') * self.num_samples
+
+		return loss
+
+
+def MC_Accuracy(pred, target):
+	if pred.dim() == 3:
+		'''
+		Prediction with a Monte Carlo approximation pred.shape=[MC, BS, C]
+		'''
+		assert target.dim() == 1, f"{target.dim()=}"
+		assert pred.dim() == 3, f"{pred.dim()=}"
+		assert target.shape[0] == pred.shape[1], f"{target.shape=}!={pred.shape=}[1]={pred.shape[1]}"
+
+		MC, BS, C = pred.shape
+
+		target = target.repeat(MC)
+
+		train_pred = pred.argmax(dim=-1)  # [MC, BS, C] -> [MC, BS]
+		train_pred = train_pred.flatten()  # [MC, BS] -> [MC * BS]
+
+		assert train_pred.shape == target.shape, f"{train_pred.shape=} != {target.shape=}"
+
+		train_pred_correct = train_pred.eq(target.view_as(train_pred)).sum().item()
+		batch_acc = train_pred_correct / target.numel()
+
+		return Tensor([batch_acc])
+
+	elif pred.dim() == 2:
+		'''
+		Deterministic prediction
+		'''
+
+		assert target.dim() == 1, f"{target.dim()=}"
+		assert pred.dim() == 2, f"{pred.dim()=}"
+		assert target.shape[0] == pred.shape[0], f"{target.shape=}!={pred.shape=}[1]={pred.shape[1]}"
+
+		BS, C = pred.shape
+
+		# target = target.repeat(MC)
+
+		train_pred = pred.argmax(dim=-1)  # [MC, BS, C] -> [MC, BS]
+		# train_pred = train_pred.flatten()  # [MC, BS] -> [MC * BS]
+
+		assert train_pred.shape == target.shape, f"{train_pred.shape=} != {target.shape=}"
+
+		train_pred_correct = train_pred.eq(target.view_as(train_pred)).sum().item()
+		batch_acc = train_pred_correct / target.numel()
+
+		return Tensor([batch_acc])
+
+
+class MC_NLL(torch.nn.Module):
+
+	def __init__(self, num_samples):
+		super().__init__()
+
+		self.num_samples = num_samples  # rescales the log-likelihood to the full dataset
+
+	def forward(self, pred, target):
+		assert pred.dim() == target.dim() + 1
+
+		mu, std = pred.mean(dim=0), pred.std(dim=0) + 1e-3
+		# std = torch.ones_like(std).fill_(0.1)
+		assert mu.shape == std.shape == target.shape, f'{mu.shape=} {std.shape=} {target.shape=}'
+		'''
+		We compute the average PER-SAMPLE loss ...
+		'''
+		NLL = -Normal(mu, std).log_prob(target).mean()
+		# print(f'{mu=} {std=} -> {NLL=}')
+		# exit()
+		'''
+		... and scale it up to the total number of samples
+		'''
+		NLL = NLL * self.num_samples
+
+		return NLL
+
+#Prior
+
+class GaussianPrior:
+
+	def __init__(self, scale):
+		assert scale>0.
+
+		self.scale = scale
+
+	def dist(self):
+		return Normal(0, self.scale)
+
+class LaplacePrior(torch.nn.Module):
+	'''
+	Attach a tensor.register_hook() call to the relevant parameter
+	Store gradient and compute Laplace Approximation
+	Compute KL-Divergence
+	'''
+	def __init__(self, module, clamp=False):
+
+		super().__init__()
+
+		# self.module = module
+		self.scale = torch.ones_like(module.weight.loc.data)
+		module.weight.loc.register_hook(self._save_grad)
+
+		self.clamp = clamp
+		self.step = 0
+		self.beta = 0.99
+
+	def _save_grad(self, grad):
+
+		self.step += 1
+		bias_correction = 1 - self.beta ** self.step
+		self.scale.mul_(self.beta).add_(alpha=1-self.beta, other=(1/grad.data**2).div_(bias_correction+1e-8))
+
+	def dist(self):
+		if self.clamp:
+			return Normal(0, torch.clamp(self.scale**0.5, min=1.0))
+		else:
+			return Normal(0, self.scale ** 0.5+1e-8)
 
 #Activation functions
 class ShiftedReLU(torch.nn.Module):
@@ -119,29 +260,29 @@ class SIVILayer(torch.nn.Module):
 			if type(_module.bias) != None:
 				_module.bias.data.normal_(0., 0.01)
 
-	def __init__(self, _dim_input, _dim_output, _dim_noise_input):
+	def __init__(self, in_features, out_features, _dim_noise_input):
 
 		super().__init__()
 
-		self.dim_input = _dim_input
-		self.dim_output = _dim_output
+		self.dim_input = in_features
+		self.dim_output = out_features
 		self.dim_noise_input = _dim_noise_input
 
-		self.dim_output_params = _dim_input * _dim_output * 2 + _dim_output * 2
+		self.dim_output_params = in_features * out_features * 2 + out_features * 2
 		self.num_hidden = np.min([self.dim_output_params, int((_dim_noise_input + self.dim_output_params) / 2)])
 
 		self.prior_sigma = torch.scalar_tensor(1.0)
 
 		self.sivi_net = Sequential(Linear(self.dim_noise_input, self.num_hidden),
 		                           Tanh(),
-		                           # Linear(self.num_hidden, self.num_hidden),
-		                           # Tanh(),
+		                           Linear(self.num_hidden, self.num_hidden),
+		                           Tanh(),
 		                           Linear(self.num_hidden, self.dim_output_params))  # weight matrix x mu x logsigma + bias x mu x logsigma
 
 		self.noise_dist = Normal(loc=torch.zeros((self.dim_noise_input,)), scale=torch.ones((self.dim_noise_input,)))
 		self.sivi_net.apply(self.init_weights)
 
-	def forward(self, x: torch.Tensor, _prior):
+	def forward(self, x):
 		'''
 
 		:param x: 3 dimensional tensor of shape [N_MC, M_BatchSize, d_Input]
@@ -170,14 +311,26 @@ class SIVILayer(torch.nn.Module):
 		dist_w = Normal(self.w_mu, self.w_std)
 		dist_b = Normal(self.b_mu, self.b_std)
 
-		out = torch.bmm(x, dist_w.rsample()) + dist_b.rsample().unsqueeze(1)
+		# print(dist_w)
 
-		prior_w = torch.distributions.kl_divergence(dist_w, Normal(torch.zeros_like(self.w_mu), self.prior_sigma * torch.ones_like(self.w_std)))
-		prior_b = torch.distributions.kl_divergence(dist_b, Normal(torch.zeros_like(self.b_mu), self.prior_sigma * torch.ones_like(self.b_std)))
+		self.sampled_w = dist_w.rsample()
+		self.sampled_b = dist_b.rsample()
 
-		prior = _prior + (torch.mean(prior_w) + torch.mean(prior_b)) / (num_MC * batch_size)
+		# print(f"{x.shape=}")
+		# print(f"{self.sampled_w.shape=}")
+		# print(f"{self.sampled_b.shape=}")
 
-		return out, prior.squeeze()
+		# out = torch.bmm(x, dist_w.rsample()) + dist_b.rsample().unsqueeze(1)
+		out = torch.baddbmm(self.sampled_b.unsqueeze(-1), x, self.sampled_w)
+		# out = torch.bmm(self.sampled_b, x, self.sampled_w)
+
+		# exit()
+		prior_w = torch.distributions.kl_divergence(dist_w, Normal(0,1.))
+		prior_b = torch.distributions.kl_divergence(dist_b, Normal(0,1.))
+
+		self.kl_div = prior_w.mean(dim=0).sum() #+ prior_b.mean(dim=0).sum()
+
+		return out
 
 	def sample_posterior_dist(self, _samples=2000, _plot=True, _str=''):
 
@@ -214,7 +367,7 @@ class SIVILayer(torch.nn.Module):
 
 				axs = axs.flat
 
-				for i in range(w.shape[0]):
+				for i in range(w.shape[0]-1):
 					axs[i].hist(w[i].numpy(), bins=150, density=True, color='r', alpha=0.5)
 					axs[i].set_ylim(0, 5)
 
@@ -606,6 +759,32 @@ class MC_BatchNorm2D(torch.nn.modules.batchnorm._BatchNorm):
 		out = out.permute(4,0,1,2,3) # shape = [MC, batch_size, features]
 		return out
 
+#Expansion Layers
+class MC_ExpansionLayer(torch.nn.Module):
+
+	def __init__(self, num_MC=1, input_dim=2):
+		'''
+
+		:param num_MC: if input.dim()==input_dim, expand first dimension by num_MC
+		:param input_dim: determines un-expanded input dim
+		'''
+		super().__init__()
+
+		self.num_MC = num_MC
+		self.input_dim = input_dim
+
+	def forward(self, x):
+
+		if x.dim()==self.input_dim:
+			out = x.unsqueeze(0).repeat(self.num_MC, *(x.dim() * (1,)))
+		elif x.dim()==self.input_dim+1:
+			out = x
+		else:
+			raise ValueError(f"Input.dim()={x.dim()}, but should be either {self.input_dim} and expanded or {self.input_dim+1}")
+
+		return out
+
+#Gaussian Variational Distributions
 class VariationalNormal(torch.nn.Module):
 
 	def __init__(self, loc, scale):
@@ -621,123 +800,26 @@ class VariationalNormal(torch.nn.Module):
 
 	def rsample(self, shape):
 
-		return self.dist().rsample(shape)
+		if hasattr(self, 'samples'):
+			del self.samples
 
-class VariationalGMM(torch.nn.Module):
+		self.samples = self.dist().rsample(shape)
 
-	def __init__(self, locs, scales, num_components=None):
-		'''
+		self.samples.requires_grad_()
+		self.samples.retain_grad()
 
-		:param weights: shape = R[batch_dim1, ..., batch_dimN, simplex]
-		:param components: batched distribution where each parameter has shape = R[batch_dim1, ..., batch_dimN, simplex]
-		:param validate_args:
-		'''
-		super().__init__()
-
-		assert locs.shape==scales.shape
-		assert locs.dim()>=2 and scales.dim()>=2
-		assert locs.shape[-1]==num_components, f'{locs.shape=} != {num_components}'
-
-		self.relaxedcategorical_temperature = 0.01
-
-		self.dirichlet_concentration  = Parameter(torch.ones(*locs.shape[:-1], num_components)*10)
-		self.locs                     = Parameter(locs)
-		self.logscales                = Parameter(torch.log(torch.exp(scales)-1))
-
-	# assert self.dirichlet_concentration.shape == self.components_loc.shape == self.components_logscale.shape
-
-	def rsample(self, sample_shape):
-
-		'''
-		sample latent dist from last dimension
-		num_MC is first dimension due to batchaddmm reasons
-		A) permute locs&logscales to first dimension then torch.gather
-		'''
-
-		latent_dist = Dirichlet(F.softplus(self.dirichlet_concentration), validate_args=True).rsample(sample_shape).float()
-
-		if self.training:
-			# self.relaxedcategorical_temperature *= 0.99
-			sampled_relaxed_cats  = RelaxedOneHotCategorical(temperature=self.relaxedcategorical_temperature, probs=latent_dist, validate_args=True).rsample()
-			# sampled_relaxed_cats = F.softmax(1/self.relaxedcategorical_temperature * sampled_relaxed_cats, dim=-1)#.transpose(-1,0)
-			# sampled_relaxed_cats = F.softmax(100 * sampled_relaxed_cats, dim=-1)#.transpose(-1,0)
-			# sampled_cats = F.softmax()
-		elif not self.training:
-			# print('evaluating')
-			# sampled_cats = Categorical(latent_dist, validate_args=True).sample() # shape = [sample_shape, batch_shape]
-			sampled_relaxed_cats  = RelaxedOneHotCategorical(temperature=self.relaxedcategorical_temperature, probs=latent_dist, validate_args=True).rsample()
-			# sampled_relaxed_cats = F.softmax(1/self.relaxedcategorical_temperature * sampled_relaxed_cats, dim=-1)#.transpose(-1,0)
-			# sampled_relaxed_cats = F.softmax(100 * sampled_relaxed_cats, dim=-1)#.transpose(-1,0)
-
-
-		# print(f'{latent_dist.shape=}, {sampled_cats.shape=}')
-
-		# exit()
-		# print(sampled_relaxed_cats[0,0,0])
-
-		# sampled_relaxed_cats = F.softmax(1/self.relaxedcategorical_temperature *sampled_relaxed_cats, dim=-1)
-		# print(sampled_relaxed_cats[:10])
-
-		# print(f'{self.components_loc.shape=}, {sampled_relaxed_cats.shape=}')
-		# sampled_loc = torch.gather(self.components_loc, dim=0, index=sampled_relaxed_cats)
-		# sampled_scale = torch.gather(F.softplus(self.components_logscale), 0, sampled_relaxed_cats)
-
-		samples = Normal(self.locs, F.softplus(self.logscales), validate_args=True).rsample(sample_shape)
-		# samples = Normal(self.locs.unsqueeze(0).expand_as(sampled_relaxed_cats), F.softplus(self.components_logscale.unsqueeze(0).expand_as(sampled_relaxed_cats)), validate_args=True).rsample()
-		# print(f'{samples.shape=}, {sampled_relaxed_cats.shape=}')
-		# exit()
-		samples = torch.sum(samples * sampled_relaxed_cats, dim=-1)
-		# dims = [x for x in range(samples.dim())]
-		# samples = samples.permute([dims[-1]]+dims[:-1])
-		# print(f'{samples.shape=}')
-
-		# exit()
-
-		return samples
-
-class BayesGMMLinear(torch.nn.Module):
-
-	def __init__(self, in_features, out_features, num_components=7, num_MC=1, prior_scale=1):
-
-		super().__init__()
-
-		self.in_features = in_features
-		self.out_features = out_features
-
-		self.weight         = VariationalGMM(locs=torch.randn(in_features, out_features, num_components),
-		                                     scales=torch.empty(in_features, out_features, num_components).fill_(.1),
-		                                     num_components=num_components)
-		self.bias           = VariationalGMM(locs=torch.randn(out_features, num_components),
-		                                     scales=torch.empty(out_features, num_components).fill_(.1),
-		                                     num_components=num_components)
-
-	def forward(self, x):
-
-		assert x.dim() == 3
-		num_MC, batch_size, features = x.shape
-		# num_MC = 1000
-		w = self.weight.rsample((num_MC,))
-		b = self.bias.rsample((num_MC,)).unsqueeze(1)
-
-		# plt.hist(w.detach().squeeze(), density=True, bins=100)
-		# plt.show(); exit()
-
-		# print(f'{b.shape=} {x.shape=} {w.shape=}')
-		out = torch.baddbmm(b, x, w)
-
-		return out
+		return self.samples
 
 #Parallel Bayesian Sampling layers
 class BayesLinear(torch.nn.Module):
 
-	def __init__(self, in_features, out_features, num_MC=1, prior_scale=1.):
+	def __init__(self, in_features, out_features, num_MC=None, prior=1.):
 
 		super().__init__()
 
 		self.dim_input = in_features
 		self.dim_output = out_features
 		self.num_MC = num_MC
-		self.prior_scale = prior_scale
 
 		self.mu_init_std = torch.sqrt(torch.scalar_tensor(2/(in_features + out_features)))
 		# self.logsigma_init_std = torch.log(torch.exp(torch.scalar_tensor(self.mu_init_std))-1) #+ params.init_std_offset
@@ -749,7 +831,16 @@ class BayesLinear(torch.nn.Module):
 		self.bias = VariationalNormal(FloatTensor(out_features).normal_(0., self.mu_init_std),
 		                              FloatTensor(out_features).fill_(self.mu_init_std))
 
-		self.reset_parameters(scale_offset=0)
+		if prior=='laplace':
+			self.prior = LaplacePrior(module=self)
+		elif prior=='laplace_clamp':
+			self.prior = LaplacePrior(module=self, clamp=True)
+		elif isinstance(float(prior), Number):
+			self.prior = GaussianPrior(scale=prior)
+		else:
+			exit('Wrong Prior ... should be in [1.0, "laplace"]')
+
+		self.reset_parameters(scale_offset=+1)
 
 	def reset_parameters(self, scale_offset=0):
 
@@ -768,22 +859,48 @@ class BayesLinear(torch.nn.Module):
 		:return:
 		'''
 
-		assert x.dim()==3, 'Input tensor not of shape [N_MC, BatchSize, Features]'
+		assert x.dim()==3, f"Input tensor not of shape [N_MC, BatchSize, Features] but is {x.shape=}"
 		# assert x.shape[0]==self.num_MC
 
 		num_MC = x.shape[0]
-		batch_size = x.shape[1]
+		bs = x.shape[1]
 
 		forward = ['reparam', 'local_reparam'][0]
 
 		if forward=='reparam':
 			# Standard Reparam Trick
 
-			w = self.weight.rsample((num_MC,))
-			b = self.bias.rsample((num_MC,1,))
+			# self.locs = self.weight.loc.unsqueeze(0).repeat(num_MC, 1, 1)
+			# self.logscales = self.weight.logscale.unsqueeze(0).repeat(num_MC, 1, 1)
+			#
+			# self.sampled_w = self.locs + torch.ones_like(self.locs).normal_() * F.softplus(self.logscales)
+			#
+			# self.locs.requires_grad_()
+			# self.locs.retain_grad()
+			# self.logscales.requires_grad_()
+			# self.logscales.retain_grad()
+			# self.sampled_w.requires_grad_()
+			# self.sampled_w.retain_grad()
+			# print(self.sampled_w)
 
-			out = torch.baddbmm(b, x, w)
-			# out = torch.bmm(x, w)
+			# print(f"BayesLinear.forward: {x.shape=} {self.sampled_w.shape=} {self.sampled_b.shape=}")
+
+			# out = torch.baddbmm(b, x, w)
+
+			# self.weight.logscale.data.fill_(0.0001)
+
+			self.sampled_w = self.weight.rsample((num_MC,))
+			self.sampled_b = self.bias.rsample((num_MC,))
+			# self.sampled_w.requires_grad_(); self.sampled_w.retain_grad()
+			# self.sampled_b.requires_grad_();self.sampled_b.retain_grad()
+			# self.sampled_w.requires_grad_()
+			# self.sampled_w.retain_grad()
+
+			# print(f"{self.sampled_w.shape=}")
+			# exit()
+			out = torch.baddbmm(self.sampled_b.unsqueeze(1), x, self.sampled_w)
+			# out = torch.baddbmm(self.bias.loc.unsqueeze(0).repeat(num_MC,1,1), x, self.weight.loc.unsqueeze(0).repeat(num_MC,1,1))
+			# out = torch.bmm(x, self.sampled_w)
 
 		if forward=='local_reparam':
 			# LOCAL REPARAM TRICK
@@ -801,7 +918,8 @@ class BayesLinear(torch.nn.Module):
 			# prior_std = 1
 			# if prior is not None: prior = prior + self.analytic_prior(_sigma=w_sigma, _sigma_prior=self.sigma_prior, _mu=self.w_mu, _mu_prior=FloatTensor([0.]))
 
-		self.kl_div = torch.distributions.kl_divergence(self.weight.dist(), Normal(0, self.prior_scale)).sum()
+		self.kl_div = torch.distributions.kl_divergence(self.weight.dist(), self.prior.dist()).sum()
+		self.entropy = self.weight.dist().entropy().sum()
 
 		return out
 

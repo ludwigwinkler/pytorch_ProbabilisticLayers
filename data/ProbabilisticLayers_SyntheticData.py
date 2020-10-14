@@ -22,6 +22,23 @@ np.set_printoptions(precision=4, suppress=True)
 
 sys.path.append("../../..")  # Up to -> KFAC -> Optimization -> PHD
 
+def generate_linreg_data(num_samples=1000, x_noise_std=0.01, y_noise_std=0.1, plot=False):
+
+	x = np.linspace(-5, 5, num_samples)
+	x += np.random.normal(0., y_noise_std, size=x.shape)
+	y_noise = np.random.normal(0., y_noise_std, size=x.shape)
+
+	y = x + y_noise
+
+	x, y = x.reshape(-1, 1), y.reshape(-1, 1)
+
+	if plot:
+		plt.scatter(x, y)
+		plt.grid()
+		plt.show()
+
+	return torch.from_numpy(x).float(), torch.from_numpy(y).float()
+
 
 def generate_nonstationary_data(num_samples=1000, x_noise_std=0.01, y_noise_std=0.1, plot=False):
 	x = np.linspace(-0.35, 0.55, num_samples)

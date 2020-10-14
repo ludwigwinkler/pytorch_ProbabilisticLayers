@@ -11,6 +11,7 @@ from matplotlib.lines import Line2D
 matplotlib.rcParams["figure.figsize"] = [10, 10]
 
 import torch
+from torch.optim.optimizer import Optimizer, required
 import torch.nn.functional as F
 
 Tensor = torch.Tensor
@@ -22,7 +23,6 @@ np.set_printoptions(precision=4, suppress=True)
 '''
 Utils.Utils
 '''
-
 
 def str2bool(v):
 	if isinstance(v, bool):
@@ -197,3 +197,34 @@ def MC_Accuracy(pred, target):
 		'''
 		target.shape = [MC * BatchSize, OneHot]
 		'''
+
+class MC_GradientCorrection(Optimizer):
+	'''
+	Is not necessary.
+	PyTorch accumulates gradients for repetition/BackProp Through Time etc. via addition.
+	Thus if we duplicate a paramater 'z' N times, PyTorchs autodiff accumulates the gradient of the { z^{n} }_n^N duplicates via summation.
+	Consider the MSE loss of a singular sample:
+	1/2 [y - 1/N \sum_k^N x^(k)]^2
+	The derivative is  1/N x^(k) [ y - 1/N \sum_k^N x^(k) ] which distributes the original gradient with the scaling 1/N
+	Following the duplication we add the N gradients up via addition
+	'''
+
+	def __init__(self, params, num_MC=required):
+
+		defaults = dict(num_MC=num_MC)
+
+		super().__init__(params, defaults)
+
+	def step(self):
+
+		for group in self.param_groups:
+
+			num_MC = group['num_MC']
+
+			for p in group['params']:
+				if p.grad is None:
+					continue
+				# print(p.grad)
+				p.grad.data.mul_(num_MC)
+				# print(p.grad)
+				# exit()

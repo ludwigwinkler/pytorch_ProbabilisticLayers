@@ -4,9 +4,12 @@ __pycache__/
 *$py.class
 
 # data
-
 *.gz
 *.pt
+
+#folderes
+data/*
+experiments/checkpoints/*
 
 
 # C extensions

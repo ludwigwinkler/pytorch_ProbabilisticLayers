@@ -26,11 +26,11 @@ sys.path.append("../../..")  # Up to -> KFAC -> Optimization -> PHD
 
 class MC_CrossEntropyLoss(torch.nn.Module):
 
-	def __init__(self, reduction='sum'):
+	def __init__(self, num_samples):
 
 		torch.nn.Module.__init__(self)
 
-		self.reduction = reduction
+		self.num_samples = num_samples
 
 	def forward(self, pred, target):
 		assert pred.dim() == 3, f'Prediction should be of shape [MC, BS, C] but is only of shape {pred.shape}'
@@ -41,7 +41,7 @@ class MC_CrossEntropyLoss(torch.nn.Module):
 
 		MC_target = target.repeat(MC).long()
 
-		loss = F.cross_entropy(pred.flatten(0, 1), MC_target, reduction='mean')
+		loss = F.cross_entropy(pred.flatten(0, 1), MC_target, reduction='mean') * self.num_samples
 		return loss
 
 def MC_Accuracy(pred, target):
@@ -66,7 +66,7 @@ def MC_Accuracy(pred, target):
 		train_pred_correct = train_pred.eq(target.view_as(train_pred)).sum().item()
 		batch_acc = train_pred_correct / target.numel()
 
-		return batch_acc
+		return Tensor([batch_acc])
 
 	elif pred.dim()==2:
 		'''
@@ -89,7 +89,7 @@ def MC_Accuracy(pred, target):
 		train_pred_correct = train_pred.eq(target.view_as(train_pred)).sum().item()
 		batch_acc = train_pred_correct / target.numel()
 
-		return batch_acc
+		return Tensor([batch_acc])
 
 
 class MC_NLL(torch.nn.Module):
@@ -103,10 +103,18 @@ class MC_NLL(torch.nn.Module):
 	def forward(self, pred, target):
 		assert pred.dim() == target.dim() + 1
 
-		mu, std = pred.mean(dim=0), pred.std(dim=0)
-		assert mu.shape==std.shape==target.shape
+		mu, std = pred.mean(dim=0), pred.std(dim=0)+1e-3
+		# std = torch.ones_like(std).fill_(0.1)
+		assert mu.shape==std.shape==target.shape, f'{mu.shape=} {std.shape=} {target.shape=}'
+		'''
+		We compute the average PER-SAMPLE loss ...
+		'''
 		NLL = -Normal(mu, std).log_prob(target).mean()
-
+		# print(f'{mu=} {std=} -> {NLL=}')
+		# exit()
+		'''
+		... and scale it up to the total number of samples
+		'''
 		NLL = NLL * self.num_samples
 
 		return NLL
