@@ -1,0 +1,70 @@
+wandb_version: 1
+
+_wandb:
+  desc: null
+  value:
+    cli_version: 0.10.2
+    framework: torch
+    is_jupyter_run: false
+    is_kaggle_kernel: false
+    python_version: 3.8.1
+batch_size:
+  desc: null
+  value: 128
+dataset:
+  desc: null
+  value: mnist
+gpus:
+  desc: null
+  value: 0
+in_features:
+  desc: null
+  value: 784
+logdir:
+  desc: null
+  value: experimentdir
+logger:
+  desc: null
+  value: <pytorch_lightning.loggers.wandb.WandbLogger object at 0x7fca5e940f40>
+logname:
+  desc: null
+  value: experiment
+lr:
+  desc: null
+  value: 0.001
+max_epochs:
+  desc: null
+  value: 2000
+model:
+  desc: null
+  value: bnn
+name:
+  desc: null
+  value: some_name
+num_MC:
+  desc: null
+  value: 13
+num_classes:
+  desc: null
+  value: 10
+num_hidden:
+  desc: null
+  value: 200
+num_samples:
+  desc: null
+  value: 55000
+num_workers:
+  desc: null
+  value: 0
+optim:
+  desc: null
+  value: adam
+plot:
+  desc: null
+  value: true
+prior:
+  desc: null
+  value: laplace_clamp
+verbose:
+  desc: null
+  value: true

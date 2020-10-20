@@ -141,17 +141,19 @@ class NN(LightningModule):
 
 		if self.hparams.optim == 'csgd':
 			u = self.trainer.optimizers[0].collect_u()
-			self.log('Min U', np.around(np.min(u),3), prog_bar=True)
-			self.log('Med U', np.around(np.median(u),3), prog_bar = True)
-			self.log('Max U', np.around(np.max(u),3), prog_bar=True)
+			# self.log('Min U', np.around(np.min(u),3), prog_bar=True)
+			# self.log('Med U', np.around(np.median(u),3), prog_bar = True)
+			# self.log('Max U', np.around(np.max(u),3), prog_bar=True)
+			self.log_dict({'Min U': np.around(np.min(u), 3), 'Med U': np.around(np.median(u), 3), 'Max U': np.around(np.max(u), 3)}, prog_bar=True)
 			# progress_bar.update({'Min|Median|Max[u]': f'{np.min(u):.3f}|{np.median(u):.3f}|{np.max(u):.3f}'})
 			# logs.update({'train/u_min': np.min(u), 'train/u_median': np.median(u), 'train/u_max': np.max(u)})
 
 		# if torch.cuda.is_available():
 		# 	progress_bar.update({'GPU MEM': f'{torch.cuda.memory_allocated() / 1024 ** 2 :.3f}'})
 
-		self.log('Train/ACC', ACC, prog_bar=True)
-		self.log('Train/Loss', LL, prog_bar=True)
+		# self.log('Train/ACC', ACC, prog_bar=True)
+		# self.log('Train/Loss', LL, prog_bar=True)
+		self.log_dict({'Train/ACC': ACC, 'Train/Loss': LL}, prog_bar=True)
 
 		# return {'loss': LL, 'ACC': ACC, 'progress_bar': progress_bar}
 		return {'loss': LL, 'Train/Loss': LL, 'Train/ACC': ACC}
@@ -161,8 +163,9 @@ class NN(LightningModule):
 		Loss = torch.stack([x['Train/Loss'] for x in outputs]).mean()
 		ACC = torch.stack([x['Train/ACC'] for x in outputs]).mean()
 
-		self.log('Train/Epoch_ACC', ACC, prog_bar=True)
-		self.log('Train/Epoch_Loss', Loss, prog_bar=True)
+		# self.log('Train/Epoch_ACC', ACC, prog_bar=True)
+		# self.log('Train/Epoch_Loss', Loss, prog_bar=True)
+		self.log_dict({'Train/Epoch_ACC': ACC, 'Train/Epoch_Loss': Loss, 'bibumbaba':1}, prog_bar=True)
 
 	def validation_step(self, batch, batch_idx):
 		x, y = batch
@@ -254,6 +257,17 @@ class BNN(LightningModule):
 
 		return self.kl_div
 
+	def collect_entropy(self):
+		self.entropy = Tensor([0.0])
+
+		for name, module in self.named_modules():
+
+			if any([isinstance(module, layer) for layer in [BayesLinear]]):
+				if hasattr(module, 'entropy'):
+					self.entropy = self.entropy + module.kl_div
+
+		return self.entropy
+
 	def training_step(self, batch, batch_idx):
 		x, y = batch
 
@@ -262,9 +276,6 @@ class BNN(LightningModule):
 		LL = self.criterion(pred, y) / self.hparams.num_samples # per sample loss
 		KL = self.collect_kl_div() / self.hparams.num_samples # per sample loss
 		H = self.collect_entropy()
-
-		progress_bar = {'ACC': ACC}
-		logs = {'train/Loss': LL, 'train/LL': LL, 'train/KL': KL, 'train/ACC': ACC}
 
 		if self.hparams.optim == 'cbayessgd' or self.hparams.optim == 'cvarsgd':
 			u = self.trainer.optimizers[0].collect_u()
@@ -275,15 +286,10 @@ class BNN(LightningModule):
 		# if torch.cuda.is_available():
 		# 	progress_bar.update({'GPU MEM': f'{torch.cuda.memory_allocated() / 1024 ** 2 :.3f}'})
 
+		self.log_dict({'Train/ACC': ACC, 'Train/LL': LL, 'Train/KL': KL, 'Train/Loss': LL+KL, 'Train/H': H}, prog_bar=True)
+		self.log_dict({'Train/H': H}, prog_bar=False)
 
-		self.log('Train/ACC', ACC, prog_bar=True)
-		self.log('Train/Loss', LL+KL, prog_bar=True)
-		self.log('Train/LL', LL, prog_bar=True)
-		self.log('Train/KL', KL, prog_bar=True)
-
-		output = {'loss': LL+KL, 'LL': LL, 'KL': KL, 'ACC': ACC}
-
-		return output
+		return {'loss': LL + KL, 'LL': LL, 'KL': KL, 'ACC': ACC, 'Entropy': H}
 
 	def training_epoch_end(self, outputs):
 
@@ -291,18 +297,17 @@ class BNN(LightningModule):
 		LL = torch.stack([x['LL'] for x in outputs]).mean()
 		KL = torch.stack([x['KL'] for x in outputs]).mean()
 		ACC = torch.stack([x['ACC'] for x in outputs]).mean()
+		H = torch.stack([x['Entropy'] for x in outputs]).mean()
 
-		self.log('Train/Epoch_ACC', ACC, prog_bar=True)
-		self.log('Train/Epoch_LL', LL, prog_bar=True)
-		self.log('Train/Epoch_KL', KL, prog_bar=True)
-		self.log('Train/Epoch_Loss', loss, prog_bar=True)
+		self.log_dict({'Train_Epoch/ACC':ACC, 'Train_Epoch/LL': LL, 'Train_Epoch/KL': KL, 'Train_Epoch/Loss': loss}, prog_bar=True)
+		self.log_dict({'Train_Epoch/H': H}, prog_bar=False)
+
 
 	def validation_step(self, batch, batch_idx):
 		x, y = batch
 
 		pred = self.forward(x.flatten(1, -1))
 		ACC = MC_Accuracy(pred, y)
-		# ACC = accuracy(pred, y)
 		LL = self.criterion(pred, y) / self.hparams.num_samples
 		KL = self.collect_kl_div() / self.hparams.num_samples
 

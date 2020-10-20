@@ -1,0 +1,27 @@
+{
+    "os": "macOS-10.16-x86_64-i386-64bit",
+    "python": "3.8.1",
+    "heartbeatAt": "2020-10-20T08:05:16.463685",
+    "startedAt": "2020-10-20T08:05:14.906559",
+    "docker": null,
+    "cpu_count": 8,
+    "cuda": null,
+    "args": [
+        "-model",
+        "bnn",
+        "-logger",
+        "True"
+    ],
+    "state": "running",
+    "codePath": "experiments/cBNN.py",
+    "program": "cBNN.py",
+    "git": {
+        "remote": "https://github.com/ludwigwinkler/pytorch_ProbabilisticLayers.git",
+        "commit": "5f81f6f913b354db375746c5f11d02120ccf2d6f"
+    },
+    "email": "paul.ludwig.winkler@gmail.com",
+    "root": "/Users/ludwigwinkler/Library/Mobile Documents/com~apple~CloudDocs/College/Code/Python/PhD/pytorch_ProbabilisticLayers",
+    "host": "TheGoodTimesBook.fritz.box",
+    "username": "ludwigwinkler",
+    "executable": "/Users/ludwigwinkler/anaconda3/envs/phd38/bin/python"
+}
