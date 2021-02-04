@@ -1,5 +1,6 @@
 import torch
 from torch.distributions import Normal, Dirichlet, Categorical, RelaxedOneHotCategorical
+from torch.distributions.utils import _standard_normal, broadcast_all
 from torch.nn import Sequential, Tanh, ReLU, Linear, Dropout, CELU, BatchNorm1d, Parameter
 import torch.nn.functional as F
 
@@ -10,12 +11,12 @@ import matplotlib.pyplot as plt
 
 # torch.manual_seed(1234)
 
-if torch.cuda.is_available():
-	FloatTensor = torch.cuda.FloatTensor
-	Tensor = torch.cuda.FloatTensor
-elif not torch.cuda.is_available():
-	FloatTensor = torch.FloatTensor
-	Tensor = torch.FloatTensor
+# if torch.cuda.is_available():
+# 	FloatTensor = torch.cuda.FloatTensor
+# 	Tensor = torch.cuda.FloatTensor
+# elif not torch.cuda.is_available():
+FloatTensor = torch.FloatTensor
+Tensor = torch.FloatTensor
 
 #Loss Functions
 class MC_CrossEntropyLoss(torch.nn.Module):
@@ -205,11 +206,12 @@ class ShiftedLeakyReLU(torch.nn.Module):
 #Other Layers
 class MC_MaxPool2d(torch.nn.Module):
 
-	def __init__(self, kernel_size=2, num_MC=None):
+	def __init__(self, kernel_size=2, stride=2, num_MC=None):
 
 		super().__init__()
 
 		self.kernel_size=kernel_size
+		self.stride=stride
 
 	def forward(self, x, num_MC=None):
 
@@ -224,7 +226,7 @@ class MC_MaxPool2d(torch.nn.Module):
 
 		out = x.permute(1,0,2,3,4) # shape = [Batch_Size, num_MC, dim_in, height, width]
 		out = out.flatten(1,2).contiguous() # shape = [batch_size, num_MC * dim_in, height, width]
-		out = F.max_pool2d(out, self.kernel_size, self.kernel_size)
+		out = F.max_pool2d(out, kernel_size=self.kernel_size, stride=self.stride)
 		out = out.reshape(batch_size, num_MC, channels, out.shape[-2], out.shape[-1]).contiguous()
 		out = out.permute(1,0,2,3,4).contiguous()
 		# out = out.chunk(num_MC,1) # num_MC tuple of [ batch_size, dim_out, height, width]
@@ -759,14 +761,14 @@ class MC_BatchNorm2D(torch.nn.modules.batchnorm._BatchNorm):
 		out = out.permute(4,0,1,2,3) # shape = [MC, batch_size, features]
 		return out
 
-#Expansion Layers
+#Util Layers
 class MC_ExpansionLayer(torch.nn.Module):
 
 	def __init__(self, num_MC=1, input_dim=2):
 		'''
 
 		:param num_MC: if input.dim()==input_dim, expand first dimension by num_MC
-		:param input_dim: determines un-expanded input dim
+		:param input_dim: number of input dimensions, if input.dim()=input_dim then add and expand 0th dimension
 		'''
 		super().__init__()
 
@@ -774,46 +776,74 @@ class MC_ExpansionLayer(torch.nn.Module):
 		self.input_dim = input_dim
 
 	def forward(self, x):
-
 		if x.dim()==self.input_dim:
 			out = x.unsqueeze(0).repeat(self.num_MC, *(x.dim() * (1,)))
 		elif x.dim()==self.input_dim+1:
 			out = x
 		else:
 			raise ValueError(f"Input.dim()={x.dim()}, but should be either {self.input_dim} and expanded or {self.input_dim+1}")
+		return out
 
+class BayesAdaptiveInit_FlattenAndLinear(torch.nn.Module):
+
+	def __init__(self, num_hidden):
+		super(BayesAdaptiveInit_FlattenAndLinear, self).__init__()
+		self.adaptively_initialized = False
+		self.num_hidden = num_hidden
+
+	def forward(self, x):
+
+		if not self.adaptively_initialized:
+			self.adaptively_initialized = True
+
+			x = x.flatten(2, -1)
+
+			self.linear = BayesLinear(x.shape[-1], self.num_hidden)
+			out = self.linear(x)
+		# print(f"FlattenAndLinear: {list(x_dim[1:])} ({prod(x_dim[1:])}) -> {list(out.shape[1:])}")
+
+		else:
+			x = x.flatten(2, -1)
+			out = self.linear(x)
 		return out
 
 #Gaussian Variational Distributions
-class VariationalNormal(torch.nn.Module):
+class VariationalNormal(torch.nn.Module, torch.distributions.Distribution):
 
 	def __init__(self, loc, scale):
 
-		super().__init__()
+		torch.nn.Module.__init__(self)
+
+		assert loc.shape==scale.shape
 
 		self.loc 	= torch.nn.Parameter(loc)
 		self.logscale 	= torch.nn.Parameter(torch.log(torch.exp(scale)-1))
+
+		torch.distributions.Distribution.__init__(self,batch_shape=self.loc.shape)
 
 	def dist(self):
 
 		return Normal(self.loc, F.softplus(self.logscale))
 
-	def rsample(self, shape):
-
-		if hasattr(self, 'samples'):
-			del self.samples
-
-		self.samples = self.dist().rsample(shape)
-
-		self.samples.requires_grad_()
-		self.samples.retain_grad()
-
-		return self.samples
+	def rsample(self, sample_shape):
+		'''
+		Copied from torch.distributions.normal
+		stores eps for later access
+		'''
+		if True:
+			shape = self._extended_shape(sample_shape)
+			self.eps = _standard_normal(shape, dtype=self.loc.dtype, device=self.loc.device)
+			samples = self.loc + self.eps * F.softplus(self.logscale)
+			# print(f"{self.loc.shape=} {self.eps.shape=} {samples.shape=}")
+		else:
+			samples = self.dist().rsample(sample_shape)
+			# print(f"{self.loc.shape=} {samples.shape=}")
+		return samples
 
 #Parallel Bayesian Sampling layers
 class BayesLinear(torch.nn.Module):
 
-	def __init__(self, in_features, out_features, num_MC=None, prior=1.):
+	def __init__(self, in_features, out_features, num_MC=None, prior=1., bias=True):
 
 		super().__init__()
 
@@ -822,14 +852,17 @@ class BayesLinear(torch.nn.Module):
 		self.num_MC = num_MC
 
 		self.mu_init_std = torch.sqrt(torch.scalar_tensor(2/(in_features + out_features)))
-		# self.logsigma_init_std = torch.log(torch.exp(torch.scalar_tensor(self.mu_init_std))-1) #+ params.init_std_offset
+		self.logsigma_init_std = 0.001
 
 
 		self.weight = VariationalNormal(FloatTensor(in_features, out_features).normal_(0., self.mu_init_std),
-		                                FloatTensor(in_features, out_features).fill_(self.mu_init_std))
+		                                FloatTensor(in_features, out_features).fill_(self.logsigma_init_std))
 
-		self.bias = VariationalNormal(FloatTensor(out_features).normal_(0., self.mu_init_std),
-		                              FloatTensor(out_features).fill_(self.mu_init_std))
+		if bias:
+			self.bias = VariationalNormal(FloatTensor(out_features).normal_(0., self.mu_init_std),
+						      FloatTensor(out_features).fill_(self.logsigma_init_std))
+		else:
+			self.bias = None
 
 		if prior=='laplace':
 			self.prior = LaplacePrior(module=self)
@@ -840,7 +873,7 @@ class BayesLinear(torch.nn.Module):
 		else:
 			exit('Wrong Prior ... should be in [1.0, "laplace"]')
 
-		self.reset_parameters(scale_offset=+1)
+		self.reset_parameters(scale_offset=0)
 
 	def reset_parameters(self, scale_offset=0):
 
@@ -890,7 +923,7 @@ class BayesLinear(torch.nn.Module):
 			# self.weight.logscale.data.fill_(0.0001)
 
 			self.sampled_w = self.weight.rsample((num_MC,))
-			self.sampled_b = self.bias.rsample((num_MC,))
+			if self.bias is not None: self.sampled_b = self.bias.rsample((num_MC,))
 			# self.sampled_w.requires_grad_(); self.sampled_w.retain_grad()
 			# self.sampled_b.requires_grad_();self.sampled_b.retain_grad()
 			# self.sampled_w.requires_grad_()
@@ -898,7 +931,8 @@ class BayesLinear(torch.nn.Module):
 
 			# print(f"{self.sampled_w.shape=}")
 			# exit()
-			out = torch.baddbmm(self.sampled_b.unsqueeze(1), x, self.sampled_w)
+			if self.bias is not None: out = torch.baddbmm(self.sampled_b.unsqueeze(1), x, self.sampled_w)
+			else:  out = torch.bmm(x, self.sampled_w)
 			# out = torch.baddbmm(self.bias.loc.unsqueeze(0).repeat(num_MC,1,1), x, self.weight.loc.unsqueeze(0).repeat(num_MC,1,1))
 			# out = torch.bmm(x, self.sampled_w)
 
@@ -923,11 +957,16 @@ class BayesLinear(torch.nn.Module):
 
 		return out
 
+	def __repr__(self):
+		return f'BayesLinear(in_features={self.dim_input}, out_features={self.dim_output}'
+
 class BayesConv2d(torch.nn.Module):
 
 	# NegHalfLog2PI = -.5 * torch.log(2.0 * FloatTensor([np.pi]))
 
-	def __init__(self, in_channels, out_channels, kernel_size, stride=1, num_MC=1, prior_scale=1):
+	def __init__(self, 	in_channels, out_channels, kernel_size, stride=1,
+		     		padding = 0, dilation = 1,
+		     		num_MC=1, prior_scale=1):
 		'''
 
 		:param in_channels:
@@ -943,18 +982,20 @@ class BayesConv2d(torch.nn.Module):
 		self.out_channels = out_channels
 		self.kernel_size = kernel_size
 		self.stride = stride
+		self.padding = padding
+		self.dilation = dilation
 		self.epsilon_sigma = 1.0
 		self.num_MC = num_MC
 		self.prior_scale = prior_scale
 
 		self.mu_init_std = torch.scalar_tensor(1./np.sqrt(in_channels*kernel_size**2))
-		# self.logsigma_init_std = torch.scalar_tensor(np.log(np.exp(self.mu_init_std)-1)) #+ params.init_std_offset
+		self.logsigma_init_std = 0.001
 
 		self.weight = VariationalNormal(FloatTensor(out_channels, in_channels, kernel_size, kernel_size).normal_(0, self.mu_init_std),
-		                                FloatTensor(out_channels, in_channels, kernel_size, kernel_size).fill_(self.mu_init_std))
+		                                FloatTensor(out_channels, in_channels, kernel_size, kernel_size).fill_(self.logsigma_init_std))
 
 		self.bias = VariationalNormal(FloatTensor(out_channels).normal_(0., self.mu_init_std),
-		                              FloatTensor(out_channels).fill_(self.mu_init_std))
+		                              FloatTensor(out_channels).fill_(self.logsigma_init_std))
 
 		self.reset_parameters(scale_offset=0.)
 
@@ -978,8 +1019,8 @@ class BayesConv2d(torch.nn.Module):
 		'''
 
 
-		assert x.dim()==5, 'Input tensor not of shape [num_MC, batch_size in_channels, height, width]'
-		assert x.shape[0] == self.num_MC, f'Input.shape={x.shape} with {x.shape[0]}!={self.num_MC}'
+		assert x.dim()==5, f'Input tensor not of shape [num_MC, batch_size in_channels, height, width], but {x.shape=}'
+		assert x.shape[0] == self.num_MC, f'Input.shape={x.shape} with [{x.shape[0]=}]!=[{self.num_MC=}]'
 
 		MC, BS, C, H, W = x.shape
 
@@ -1007,7 +1048,7 @@ class BayesConv2d(torch.nn.Module):
 		Data: 	[BS, [MC_C_1, MC_C_2, MC_C_3, MC_C_4 ... ], H, W]
 		Kernel: [MC_Weight_1, MC_Weight_2, MC_Weight_3
 		'''
-		out = F.conv2d(out, w, groups=MC, bias=b, stride=self.stride)
+		out = F.conv2d(out, w, groups=MC, bias=b, stride=self.stride, padding=self.padding, dilation=self.dilation)
 
 		'''
 		Unsplit the MC dim from the C_Out dim and move MC dim again to the front
