@@ -26,7 +26,7 @@ click==7.1.2
 cmake==3.15.3
 commonmark==0.9.1
 configparser==5.0.0
-cryptography==3.2
+cryptography==3.3.2
 cycler==0.10.0
 decorator==4.4.2
 defusedxml==0.6.0
